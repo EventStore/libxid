@@ -108,6 +108,8 @@ use std::io::prelude::*;
 use std::process;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "macos")]
+use sysctl::{Sysctl, CtlValue, SysctlError};
 
 const ID_LEN: usize = 12;
 
@@ -152,7 +154,7 @@ impl Generator {
     pub fn new_id_with_time(&self, t: SystemTime) -> Result<ID, IDGenerationError> {
         match t.duration_since(UNIX_EPOCH) {
             Ok(n) => Ok(self.generate(n.as_secs())),
-            Err(e) => Err(IDGenerationError(e.description().to_string())),
+            Err(e) => Err(IDGenerationError(e.to_string())),
         }
     }
 
@@ -450,16 +452,35 @@ fn read_machine_id() -> [u8; 3] {
     [hash[0], hash[1], hash[2]]
 }
 
+#[cfg(target_os = "macos")]
+fn platform_machine_id() -> Result<String, SysctlError> {
+    let ctl = sysctl::Ctl::new("kern.uuid")?;
+
+    Ok(ctl.value()?.to_string())
+}
+
 #[cfg(target_os = "linux")]
 fn platform_machine_id() -> Result<String, io::Error> {
-    // XXX: unlikely to work if read with an unpriviledged user
-    let mut file = File::open("/sys/class/dmi/id/product_uuid")?;
-
     let mut contents = String::new();
 
-    file.read_to_string(&mut contents)?;
+    // Try reading machine id first
+    let result = File::open("/etc/machine-id");
 
-    Ok(contents)
+    match result {
+        Ok(mut file) => {
+            file.read_to_string(&mut contents)?;
+
+            Ok(contents)
+        }
+        _ => {
+            // XXX: unlikely to work if read with an unprivileged user
+            let mut file = File::open("/sys/class/dmi/id/product_uuid")?;
+
+            file.read_to_string(&mut contents)?;
+
+            Ok(contents)
+        }
+    }
 }
 
 fn hostname() -> String {
